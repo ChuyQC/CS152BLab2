@@ -1,0 +1,92 @@
+`timescale 1ns/1ps
+module transmitter_tb;
+    reg clk, rst, entered;
+    reg [7:0] data;
+    wire transmitter_line;
+    wire busy;
+    transmitter uut (
+        .clk(clk),
+        .rst(rst),
+        .data(data),
+        .entered(entered),
+        .transmitter_line(transmitter_line),
+        .busy(busy)
+    );
+    always #5 clk = ~clk;
+    initial begin
+        clk = 0;
+        rst = 1;
+        entered = 0;
+        data = 8'b0;
+        #20;
+        rst = 0;
+        #20;
+        // test 1: send 0xA5
+        data = 8'hA5;
+        entered = 1;
+        #10;
+        entered = 0;
+        #120;
+        // test 2: send 0xFF
+        data = 8'hFF;
+        entered = 1;
+        #10;
+        entered = 0;
+        #120;
+        // test 3: reset mid transmission
+        data = 8'hA5;
+        entered = 1;
+        #10;
+        entered = 0;
+        #40;
+        rst = 1;
+        #20;
+        rst = 0;
+        #50;
+        // test 4: data rewrite during transmission
+        // 0xBB should be ignored, data_cache already latched 0xA5
+        data = 8'hA5;
+        entered = 1;
+        #10;
+        entered = 0;
+        data = 8'hBB;
+        #120;
+        // test 5: entered pulse while busy
+        // second pulse should be ignored
+        data = 8'hA5;
+        entered = 1;
+        #10;
+        entered = 0;
+        #20;
+        entered = 1;
+        #10;
+        entered = 0;
+        #120;
+        // test 6: send 0x00 all zeros
+        data = 8'h00;
+        entered = 1;
+        #10;
+        entered = 0;
+        #120;
+        // test 7: send 0xFF all ones
+        data = 8'hFF;
+        entered = 1;
+        #10;
+        entered = 0;
+        #120;
+        $finish;
+    end
+endmodule
+// receiver_tb.v:
+//   - after sending 0xA5 frame, data should show 165
+//     and data_ready should pulse high for one cycle
+//   - after sending 0x00 frame, data should show 0
+//     and data_ready should pulse high for one cycle
+//   - after sending 0xFF frame, data should show 255
+//     and data_ready should pulse high for one cycle
+//   - on bad stop bit test, data_ready should NOT pulse
+//     and state should return to IDLE
+//   - on glitch test, receiver should ignore the short pulse
+//     and data_ready should NOT pulse
+//   - on reset mid reception test, state should immediately
+//     go back to IDLE and data_ready should NOT pulse
