@@ -1,0 +1,47 @@
+`timescale 1ns/1ps
+
+module testbench1;
+
+    reg clk, rst, enter_button;
+    reg [7:0] switches_data;
+    wire [7:0] leds;
+    wire tx_line;
+    wire rx_line;
+
+    // loopback: connect tx back to rx
+    assign rx_line = tx_line; 
+
+    gpio_uart uut (
+        .clk(clk),
+        .rst(rst),
+        .enter_button(enter_button),
+        .switches_data(switches_data),
+        .tx_line(tx_line), 
+        .rx_line(rx_line),
+        .leds(leds)
+    );
+
+    always #5 clk = ~clk;
+
+    initial begin
+        clk = 0;
+        rst = 1;
+        enter_button = 0;
+        switches_data = 8'hA5;
+        #200;
+        rst = 0;
+        #520800;
+        enter_button = 1;
+        #312480;
+        enter_button = 0;
+        #2000000;
+        $finish;
+    end
+
+endmodule
+// testbench1.v (full loopback test):
+//   - switches_data = 0xA5, after pressing enter button
+//   - leds should light up as 0xA5 = 165 = 10100101
+//   - tx_line will go low for start bit, toggle through
+//     8 data bits LSB first, then go high for stop bit
+//   - rx_line mirrors tx_line since its a loopback
