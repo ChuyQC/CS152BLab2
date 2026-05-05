@@ -1,0 +1,313 @@
+`timescale 1ns / 1ps
+//////////////////////////////////////////////////////////////////////////////////
+// Company: 
+// Engineer: 
+// 
+// Create Date: 04/22/2026 10:20:57 AM
+// Design Name: 
+// Module Name: gpio_uart
+// Project Name: 
+// Target Devices: 
+// Tool Versions: 
+// Description: 
+// 
+// Dependencies: 
+// 
+// Revision:
+// Revision 0.01 - File Created
+// Additional Comments:
+// 
+//////////////////////////////////////////////////////////////////////////////////
+
+
+
+//two primary modes: IDLE and DATA
+//IDLE waits for transmitter to pull line LO 
+//enter DATA: transmitter pulls line according to byte of data being transmitted 
+module gpio_uart( // master module 
+    //maybe have outputs be the current state; IDLE or DATA
+    input wire clk, //master clock from board - how do we use the divided clock? 
+    input wire enter_button, // button pressed on board to enter data 
+    input wire [7:0] switches_data, // config of switches on board 
+    input wire rst, //reset button on board
+    input wire rx_line, //from other boards TX
+    output wire tx_line, //TO other boards RX
+   
+    output reg [7:0] leds //the leds should light up via receiver
+    );
+    
+    
+    reg [7:0] saved_switches_data; 
+    reg enter_button_prev; 
+    reg send_pulse; 
+    
+    wire [7:0] received_data; 
+    wire data_ready; 
+    wire tx_busy; 
+    
+    reg save_button_enter; 
+        
+    wire baud_clk; //divided clock to correct baud rate
+    wire transmitter_line; 
+    
+    //      baud rate clock divider
+    clk_div_baud_9600bs baud_gen (
+        .mtr_clk(clk),
+        .rst(rst), 
+        .b_9600bs(baud_clk)
+    );
+    
+    // detect enter button pressed
+    
+    always @(posedge baud_clk or posedge rst) begin
+        if (rst) begin //zero out everything
+            enter_button_prev <= 1'b0; 
+            send_pulse <= 1'b0; 
+            saved_switches_data <= 8'b0; 
+        end else begin
+            enter_button_prev <= enter_button; 
+            send_pulse <= 1'b0; 
+            
+            if (enter_button && !enter_button_prev && !tx_busy && !send_pulse) begin
+                saved_switches_data <= switches_data; 
+                send_pulse <= 1'b1; 
+            end
+        end 
+    end
+    
+    
+    transmitter tx (
+        .clk(baud_clk), //divided clock
+        .rst(rst), 
+        .entered(send_pulse),
+        .data(saved_switches_data), 
+        .transmitter_line(transmitter_line),
+        .busy(tx_busy)
+    ); 
+    
+    //tx_line goes to GPIO pin → other board
+    assign tx_line = transmitter_line;
+    
+    receiver rx (
+        .clk(baud_clk), 
+        .rst(rst), 
+        .receiver_line(rx_line), 
+        .data(received_data), //output of master module is from leds from receiver
+        .data_ready(data_ready) 
+    ); 
+    
+    
+    always @(posedge baud_clk or posedge rst) begin
+        if (rst) begin
+            leds <= 8'b0; 
+        end else begin
+            if (data_ready) begin
+                leds <= received_data; 
+            end
+        end
+    end
+endmodule 
+
+//reads from singular input and outputs a byte of data
+module receiver(
+        input wire clk, 
+        input wire rst,
+        input wire receiver_line, 
+        
+        output reg [7:0] data,
+        output reg data_ready
+); 
+
+    reg [7:0] data_cache; 
+    reg [3:0] bit_index;
+    
+    localparam IDLE = 2'b00;
+    localparam DATA = 2'b01; 
+    localparam STOP = 2'b10; 
+    
+    reg [1:0] state; 
+       
+    always @(posedge clk or posedge rst) begin
+        if (rst) begin
+            state      <= IDLE; 
+            data       <= 8'b0; 
+            data_cache <= 8'b0; 
+            bit_index  <= 4'b0; 
+            data_ready <= 1'b0;
+        end else begin
+            data_ready <= 1'b0; 
+            case (state)
+                IDLE: begin
+                    if (receiver_line == 1'b0) begin
+                        bit_index <= 4'd0;
+                        state     <= DATA; 
+                    end
+                end
+
+                DATA: begin
+                    data_cache[bit_index] <= receiver_line;
+                    if (bit_index == 4'd7) begin
+                        bit_index <= 4'd0;
+                        state     <= STOP;
+                    end else begin
+                        bit_index <= bit_index + 1'b1; 
+                    end
+                end
+                
+                STOP: begin
+                    if (receiver_line == 1'b1) begin
+                        data       <= data_cache; 
+                        data_ready <= 1'b1; 
+                    end 
+                    state <= IDLE;
+                end 
+            endcase
+        end
+    end
+endmodule
+
+//reads a byte of data 
+//serializes it on an output wire according to UART 8N1 spec
+//edge cases examples:
+//      resetting while transmitting
+//      changing the data to be transmitted while transmitting
+module transmitter(
+        input wire clk, //baud rate
+        input wire rst, 
+        input wire [7:0] data,   //switches data 
+        input wire entered, //single bit indicating when enter pressed     
+        output wire transmitter_line, 
+        output wire busy
+); 
+
+    reg tx_reg; 
+    reg busy_reg; 
+    
+    reg [7:0] data_cache; 
+    reg [3:0] bit_index;
+    
+    localparam IDLE = 2'b00;
+    localparam START = 2'b01;
+    localparam DATA = 2'b10; 
+    localparam STOP = 2'b11; 
+    
+    reg [1:0] state; 
+    
+    assign transmitter_line = tx_reg; 
+    assign busy = busy_reg; 
+    
+    always @(posedge clk or posedge rst) begin
+        if (rst) begin // check reset behavior 
+            state <= IDLE; 
+            tx_reg <= 1'b1; 
+            busy_reg <= 1'b0; 
+            data_cache <= 8'b0; 
+            bit_index <= 4'b0;
+        end else begin
+            case (state)
+                IDLE: begin
+                    tx_reg <= 1'b1;
+                    busy_reg <= 1'b0; 
+                    
+                    if (entered) begin
+                        data_cache <= data; 
+                        bit_index <= 4'd0; 
+                        busy_reg <= 1'b1; 
+                        state <= START; 
+                    end
+                end
+                START: begin
+                    tx_reg <= 1'b0; // pull line LO 4 start bit
+                    state <= DATA; 
+                end
+                
+                DATA: begin
+                    tx_reg <= data_cache[bit_index]; // starts at 0 bit_index 
+                    
+                    if (bit_index == 4'd7) begin
+                        bit_index <= 4'd0;
+                        state <= STOP;
+                    end else begin
+                        bit_index <= bit_index + 1'b1; 
+                    end
+                end
+                
+                STOP: begin
+                    tx_reg <= 1'b1; // put line HI again
+                    state <= IDLE; //just always return to idle
+                    busy_reg <= 1'b0; //not busy anymore 
+                end
+           endcase
+       end
+   end
+endmodule
+
+// clock divider for baud rate frequency: 9600 bits/sec 
+// master clock on Basys3 board: 100MHz
+module clk_div_baud_9600bs(
+        input wire mtr_clk, //100MHz clock
+        input wire rst, 
+        output reg b_9600bs //approximate 9600 Hz clock
+); 
+    //  100,000,000 / 9600 = 10416.66...
+    //  approx. 10416.66... / 2 = 5208
+    localparam integer HALF_DIV = 5208; 
+    
+    reg [12:0] count; 
+    
+    always @(posedge mtr_clk) begin
+        if (rst) begin 
+            count <= 13'd0; 
+            b_9600bs <= 1'b0;
+        end else begin
+            if (count == HALF_DIV - 1) begin
+                count <= 13'd0;
+                b_9600bs <= ~b_9600bs;
+            end else begin
+                count <= count + 1'b1;
+            end
+    end
+ end
+endmodule 
+
+// clock divider for baud rate frequency: 115200 bits/sec 
+// master clock on Basys3 board: 100MHz
+module clk_div_baud_115200bs(
+        input wire mtr_clk, //100MHz clock
+        input wire rst, 
+        output reg b_115200bs //approximate 115200 Hz clock
+); 
+    // ( 100,000,000 / 115200 ) / 2 = approx.
+    localparam integer HALF_DIV = 434; 
+    
+    reg [8:0] count; 
+    
+    always @(posedge mtr_clk) begin
+        if (rst) begin 
+            count <= 0; 
+            b_115200bs <= 0;
+        end else begin
+            if (count == HALF_DIV - 1) begin
+                count <= 0;
+                b_115200bs <= ~b_115200bs;
+            end else begin
+                count <= count + 1;
+            end
+    end
+ end
+endmodule 
+
+
+
+//changelog: initial version wednesday april 22 first version
+//changelog: friday april 24th second version - likely doesn't compile as it's still more of an outline
+//changelog: monday april 27th third version - still just outline
+//changelog: wednesday april 29th fourth version - code written, needs 2 testbenches (arya said this today) 1 for receiver and 1 for transmitter
+//changelog: sunday may 2nd fifth version, fully working
+//              - fixed transmitter STOP state to always go to IDLE
+//              - fixed receiver by removing extra START state
+//                (it was eating the first data bit)
+//              - added tx_line and rx_line ports to top module
+//                so it can talk to real GPIO pins on the board
+//              - fixed edge detector in gpio_uart to not 
+//                double-fire when button is held
