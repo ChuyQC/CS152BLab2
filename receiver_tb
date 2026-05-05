@@ -1,0 +1,89 @@
+`timescale 1ns/1ps
+module receiver_tb;
+    reg clk, rst;
+    reg receiver_line;
+    wire [7:0] data;
+    wire data_ready;
+    receiver uut (
+        .clk(clk),
+        .rst(rst),
+        .receiver_line(receiver_line),
+        .data(data),
+        .data_ready(data_ready)
+    );
+    always #5 clk = ~clk;
+    task send_frame;
+        input [7:0] byte_in;
+        integer i;
+        begin
+            receiver_line = 0;
+            #10;
+            for (i = 0; i < 8; i = i + 1) begin
+                receiver_line = byte_in[i];
+                #10;
+            end
+            receiver_line = 1;
+            #10;
+        end
+    endtask
+    initial begin
+        clk = 0;
+        rst = 1;
+        receiver_line = 1;
+        #20;
+        rst = 0;
+        #20;
+        // test 1: send 0xA5
+        send_frame(8'hA5);
+        #20;
+        // test 2: send 0xFF
+        send_frame(8'hFF);
+        #20;
+        // test 3: invalid stop bit
+        receiver_line = 0; #10;
+        receiver_line = 1; #10;
+        receiver_line = 0; #10;
+        receiver_line = 1; #10;
+        receiver_line = 0; #10;
+        receiver_line = 0; #10;
+        receiver_line = 1; #10;
+        receiver_line = 0; #10;
+        receiver_line = 1; #10;
+        receiver_line = 0; #20; // bad stop bit
+        receiver_line = 1;
+        #20;
+        // test 4: send 0x00 all zeros
+        send_frame(8'h00);
+        #20;
+        // test 5: glitch during IDLE
+        // short pulse that should not trigger a frame
+        receiver_line = 0;
+        #3;
+        receiver_line = 1;
+        #20;
+        // test 6: reset mid reception
+        receiver_line = 0; // start bit
+        #10;
+        receiver_line = 1; #10;
+        receiver_line = 0; #10;
+        #10;
+        rst = 1; // reset mid frame
+        #20;
+        rst = 0;
+        receiver_line = 1;
+        #20;
+        $finish;
+    end
+endmodule
+// receiver_tb.v:
+//   - after sending 0xA5 frame, data should show 165
+//     and data_ready should pulse high for one cycle
+//   - after sending 0xFF frame, data should show 255
+//     and data_ready should pulse high again
+//   - on bad stop bit test, data_ready should NOT pulse
+//   - after sending 0x00 frame, data should show 0
+//     and data_ready should pulse high for one cycle
+//   - on glitch test, receiver should ignore the short pulse
+//     and data_ready should NOT pulse
+//   - on reset mid reception test, state should immediately
+//     go back to IDLE and data_ready should NOT pulse
